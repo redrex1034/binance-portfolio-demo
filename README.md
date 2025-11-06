@@ -1,4 +1,11 @@
 # Binance Portfolio Demo (CLI + GUI)
+![Dashboard](assets/dashboard1.png)
+
+### Buy Simulation
+![Buy Example](dashboard2.png)
+![Dashboard1](assets/dashboard3.png)
+
+
 
 A portfolio-ready demo that simulates a Binance futures trading bot.  
 Works in restricted regions by running in **mock mode** (no API keys required). If you have `python-binance` and testnet keys you can enable real testnet mode.
