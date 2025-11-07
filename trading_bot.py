@@ -1,310 +1,289 @@
-# trading_bot.py
 """
-Unified trading bot module
-- Provides a CLI for mock/testnet usage (prices, buy/sell, balance, calc-size, set-leverage)
-- If python-binance is installed and API keys provided, can switch to real-client mode (testnet).
-- Otherwise uses a MockClient backed by JSON files in data/
+Trading Bot (CLI + Mock Binance Portfolio)
+------------------------------------------
+Simulates a Binance futures trading bot that works offline or with Binance Testnet API.
+
+Features:
+- Mock trading (no API keys needed)
+- Position size calculation
+- Buy/Sell simulation
+- CLI interface for quick testing
+- Colored logging (to console) + file logs
 """
 
 import argparse
 import json
-from pathlib import Path
-from datetime import datetime
 import logging
 import os
-from decimal import Decimal, ROUND_DOWN
-import trading_bot as tb
+from datetime import datetime
+from pathlib import Path
 
+# --- Try to import colorlog for pretty colors ---
+try:
+    import colorlog
+except ImportError:
+    colorlog = None
 
-# Logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
-# Paths
-PROJECT_ROOT = Path(__file__).parent
-DATA_DIR = PROJECT_ROOT / "data"
-DATA_DIR.mkdir(exist_ok=True)
-PRICES_FILE = DATA_DIR / "mock_prices.json"
-BALANCE_FILE = DATA_DIR / "mock_balance.json"
-
-# Defaults (if files missing we'll create reasonable mock files)
-DEFAULT_PRICES = [
-    {"symbol": "BTCUSDT", "price": 68250.00},
-    {"symbol": "ETHUSDT", "price": 3650.00},
-    {"symbol": "BNBUSDT", "price": 590.00},
-    {"symbol": "SOLUSDT", "price": 190.50}
-]
-
-DEFAULT_BALANCE = {"USDT": 10000.0, "BTC": 0.0, "ETH": 0.0, "BNB": 0.0, "SOL": 0.0}
-
-# Create default files if missing
-if not PRICES_FILE.exists():
-    PRICES_FILE.write_text(json.dumps(DEFAULT_PRICES, indent=2))
-if not BALANCE_FILE.exists():
-    BALANCE_FILE.write_text(json.dumps(DEFAULT_BALANCE, indent=2))
-
-
-# Try to import python-binance; if not available we will fallback to mock
+# --- Optional: Binance client if available ---
 try:
     from binance.client import Client
-    from binance.enums import SIDE_BUY, SIDE_SELL
-    from binance.exceptions import BinanceAPIException, BinanceOrderException
-    BINANCE_AVAILABLE = True
-except Exception:
-    BINANCE_AVAILABLE = False
-    # define constants so rest of code works
-    SIDE_BUY = "BUY"
-    SIDE_SELL = "SELL"
+    from binance.enums import *
+except ImportError:
+    Client = None
+
+# --- Constants ---
+SIDE_BUY = "BUY"
+SIDE_SELL = "SELL"
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(exist_ok=True)
+LOG_DIR = Path("logs")
+LOG_DIR.mkdir(exist_ok=True)
+LOG_FILE = LOG_DIR / "bot.log"
 
 
-# ---------------------------
-# Helper functions
-# ---------------------------
-def read_json(path: Path):
-    with open(path, "r") as f:
-        return json.load(f)
+# ==========================
+# Logging Configuration
+# ==========================
+def setup_logger():
+    """Set up colorized logger (console + file)."""
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+
+    # Remove any previous handlers
+    for h in logger.handlers[:]:
+        logger.removeHandler(h)
+
+    # File handler (plain text)
+    file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+    file_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    file_handler.setFormatter(file_formatter)
+
+    # Console handler (colorized if colorlog available)
+    console_handler = logging.StreamHandler()
+    if colorlog:
+        color_formatter = colorlog.ColoredFormatter(
+            "%(log_color)s%(asctime)s [%(levelname)s]%(reset)s %(message_log_color)s%(message)s",
+            datefmt="%H:%M:%S",
+            log_colors={
+                "DEBUG": "cyan",
+                "INFO": "green",
+                "WARNING": "yellow",
+                "ERROR": "red",
+                "CRITICAL": "bold_red",
+            },
+            secondary_log_colors={
+                "message": {
+                    "INFO": "white",
+                    "WARNING": "yellow",
+                    "ERROR": "red",
+                    "CRITICAL": "red",
+                }
+            },
+        )
+        console_handler.setFormatter(color_formatter)
+    else:
+        console_handler.setFormatter(file_formatter)
+
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
+
+    return logger
 
 
-def write_json(path: Path, data):
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+logger = setup_logger()
 
 
-def round_dec(value, ndigits=6):
-    # safer rounding for crypto qtys/prices
-    q = Decimal(value).quantize(Decimal(10) ** -ndigits, rounding=ROUND_DOWN)
-    return float(q)
-
-
-# ---------------------------
-# Mock client (file-backed)
-# ---------------------------
+# ==========================
+# Mock Bot Implementation
+# ==========================
 class MockFuturesBot:
+    """Simulates Binance Futures trading for testing and portfolios."""
+
     def __init__(self):
-        logging.info("Using MockFuturesBot (file-backed).")
-        self.prices_file = PRICES_FILE
-        self.balance_file = BALANCE_FILE
+        self.balance_file = DATA_DIR / "mock_balance.json"
+        self.price_file = DATA_DIR / "mock_prices.json"
+
+        if not self.balance_file.exists():
+            with open(self.balance_file, "w") as f:
+                json.dump({"USDT": 1000.0, "BTC": 0.0, "ETH": 0.0}, f, indent=2)
+
+        if not self.price_file.exists():
+            with open(self.price_file, "w") as f:
+                json.dump(
+                    [
+                        {"symbol": "BTCUSDT", "price": 68000.0},
+                        {"symbol": "ETHUSDT", "price": 3200.0},
+                        {"symbol": "BNBUSDT", "price": 560.0},
+                    ],
+                    f,
+                    indent=2,
+                )
+
+        logger.info("Initialized Mock Futures Bot.")
+
+    def _load_balance(self):
+        with open(self.balance_file) as f:
+            return json.load(f)
+
+    def _save_balance(self, bal):
+        with open(self.balance_file, "w") as f:
+            json.dump(bal, f, indent=2)
 
     def get_all_prices(self):
-        return read_json(self.prices_file)
+        with open(self.price_file) as f:
+            prices = json.load(f)
+        return prices
 
-    def get_price(self, symbol):
+    def get_price(self, symbol: str):
         for p in self.get_all_prices():
-            if p["symbol"].upper() == symbol.upper():
-                return float(p["price"])
-        return None
+            if p["symbol"] == symbol.upper():
+                return p["price"]
+        raise ValueError(f"Symbol {symbol} not found")
 
-    def get_balance(self):
-        b = read_json(self.balance_file)
-        return b.get("USDT", 0.0)
+    def place_market_order(self, symbol: str, side: str, amount: float):
+        bal = self._load_balance()
+        price = self.get_price(symbol)
+        base = symbol.replace("USDT", "")
+
+        if side == SIDE_BUY:
+            cost = price * amount
+            if bal["USDT"] >= cost:
+                bal["USDT"] -= cost
+                bal[base] = bal.get(base, 0) + amount
+                msg = f"Bought {amount} {base} for {cost:.2f} USDT"
+                logger.info(msg)
+            else:
+                logger.error("Not enough USDT balance.")
+                raise ValueError("Not enough USDT balance.")
+
+        elif side == SIDE_SELL:
+            if bal.get(base, 0) >= amount:
+                bal["USDT"] += price * amount
+                bal[base] -= amount
+                msg = f"Sold {amount} {base} for {price * amount:.2f} USDT"
+                logger.info(msg)
+            else:
+                logger.error(f"Not enough {base} balance.")
+                raise ValueError(f"Not enough {base} balance.")
+        else:
+            logger.error("Invalid order side.")
+            raise ValueError("Invalid side. Use BUY or SELL.")
+
+        self._save_balance(bal)
+        return {
+            "symbol": symbol,
+            "side": side,
+            "amount": amount,
+            "price": price,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
 
     def show_balance(self):
-        return read_json(self.balance_file)
-
-    def save_balance(self, balance_dict):
-        write_json(self.balance_file, balance_dict)
-
-    def set_leverage(self, symbol, leverage):
-        # mock does nothing but logs
-        logging.info(f"(mock) set leverage {leverage}x for {symbol}")
-
-    def place_market_order(self, symbol, side, quantity):
-        # Modify local balance file accordingly (simulate market order)
-        b = read_json(self.balance_file)
-        symbol_base = symbol.replace("USDT", "")
-        price = self.get_price(symbol)
-        if price is None:
-            raise ValueError("Symbol not found in mock prices")
-
-        # Buy
-        if side == SIDE_BUY:
-            cost = quantity * price
-            if b["USDT"] < cost:
-                raise ValueError("Not enough USDT")
-            b["USDT"] = round_dec(b["USDT"] - cost, 6)
-            b[symbol_base] = round_dec(b.get(symbol_base, 0.0) + quantity, 8)
-            write_json(self.balance_file, b)
-            return {"status": "FILLED", "side": "BUY", "symbol": symbol, "price": price, "qty": quantity}
-
-        # Sell
-        elif side == SIDE_SELL:
-            if b.get(symbol_base, 0.0) < quantity:
-                raise ValueError(f"Not enough {symbol_base}")
-            proceeds = quantity * price
-            b[symbol_base] = round_dec(b.get(symbol_base, 0.0) - quantity, 8)
-            b["USDT"] = round_dec(b["USDT"] + proceeds, 6)
-            write_json(self.balance_file, b)
-            return {"status": "FILLED", "side": "SELL", "symbol": symbol, "price": price, "qty": quantity}
-
-    def futures_mark_price(self, symbol):
-        # mimic binance client response shape
-        price = self.get_price(symbol)
-        return {"symbol": symbol, "markPrice": str(price)}
+        bal = self._load_balance()
+        logger.info("Balance checked.")
+        return bal
 
 
-# ---------------------------
-# Real Binance wrapper (thin)
-# ---------------------------
+# ==========================
+# Real Binance Bot
+# ==========================
 class RealFuturesBot:
+    """Connects to Binance Testnet or Live."""
+
     def __init__(self, api_key, api_secret, testnet=True):
-        if not BINANCE_AVAILABLE:
-            raise RuntimeError("python-binance package not installed")
-        logging.info("Initializing RealFuturesBot (python-binance).")
-        self.client = Client(api_key, api_secret)
-        if testnet:
-            # by default python-binance uses mainnet; set testnet futures url if requested
-            self.client.FUTURES_URL = "https://testnet.binancefuture.com/fapi"
-        self.testnet = testnet
+        if not Client:
+            raise ImportError("Binance package not installed. Run: pip install python-binance")
+        self.client = Client(api_key, api_secret, testnet=testnet)
+        logger.info(f"Connected to Binance {'Testnet' if testnet else 'Live'}")
 
     def get_all_prices(self):
-        # uses futures mark price endpoint to approximate
-        infos = self.client.futures_mark_price()
-        # limit to some standard symbols for portfolio demo
-        symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"]
-        out = []
-        for s in symbols:
-            item = next((i for i in infos if i["symbol"] == s), None)
-            if item:
-                out.append({"symbol": s, "price": float(item["markPrice"])})
-        return out
+        prices = self.client.futures_symbol_ticker()
+        return [{"symbol": p["symbol"], "price": float(p["price"])} for p in prices]
 
     def get_price(self, symbol):
-        item = self.client.futures_mark_price(symbol=symbol)
-        return float(item["markPrice"])
+        ticker = self.client.futures_symbol_ticker(symbol=symbol)
+        return float(ticker["price"])
 
-    def get_balance(self):
-        account = self.client.futures_account_balance()
-        usdt = next((i for i in account if i["asset"] == "USDT"), None)
-        return float(usdt["balance"]) if usdt else 0.0
+    def place_market_order(self, symbol, side, amount):
+        order = self.client.futures_create_order(symbol=symbol, side=side, type="MARKET", quantity=amount)
+        logger.info(f"Executed {side} order for {symbol}, qty={amount}")
+        return order
 
     def show_balance(self):
-        account = self.client.futures_account_balance()
-        # return whole structure for debugging
-        return account
-
-    def save_balance(self, *_):
-        raise RuntimeError("Cannot save balance to file in real mode")
-
-    def set_leverage(self, symbol, leverage):
-        self.client.futures_change_leverage(symbol=symbol, leverage=leverage)
-
-    def place_market_order(self, symbol, side, quantity):
-        return self.client.futures_create_order(symbol=symbol, side=side, type="MARKET", quantity=quantity)
-
-    def futures_mark_price(self, symbol):
-        return self.client.futures_mark_price(symbol=symbol)
+        balances = self.client.futures_account_balance()
+        logger.info("Fetched live futures account balance.")
+        return balances
 
 
-# ---------------------------
-# Factory
-# ---------------------------
-def build_bot(api_key=None, api_secret=None, use_real=False, testnet=True):
-    # If user explicitly requests real mode and we have keys + python-binance -> RealFuturesBot
-    if use_real and BINANCE_AVAILABLE and api_key and api_secret:
-        return RealFuturesBot(api_key, api_secret, testnet=testnet)
-    # Otherwise use mock
-    return MockFuturesBot()
+# ==========================
+# Utility: Build Bot
+# ==========================
+def build_bot(api_key=None, api_secret=None, use_real=False):
+    if use_real and api_key and api_secret:
+        return RealFuturesBot(api_key, api_secret, testnet=True)
+    else:
+        return MockFuturesBot()
 
 
-# ---------------------------
-# Business logic utilities
-# ---------------------------
-def calculate_position_size(bot, symbol, risk_pct, stop_loss_pct, leverage):
-    balance = bot.get_balance()
-    if balance is None:
-        raise ValueError("Failed to get account balance")
-    risk_amount = balance * (risk_pct / 100.0)
-    price_data = bot.futures_mark_price(symbol=symbol)
-    current_price = float(price_data["markPrice"])
-    stop_distance = current_price * stop_loss_pct
-    qty = (risk_amount * leverage) / stop_distance
-    # round qty to reasonable precision
-    return round_dec(qty, 6), current_price
+# ==========================
+# Utility: Position Size Calculator
+# ==========================
+def calculate_position_size(bot, symbol: str, risk_pct: float, stop_loss_pct: float, leverage: int = 1):
+    """Calculate position size given risk %, stop loss, and leverage."""
+    balance = bot.show_balance()
+    usdt_balance = balance.get("USDT", 0)
+    price = bot.get_price(symbol)
+    risk_amount = usdt_balance * (risk_pct / 100)
+    position_size = (risk_amount * leverage) / (price * stop_loss_pct)
+    logger.info(f"Calculated position size: {position_size:.6f} {symbol} @ {price:.2f} USDT")
+    return position_size, price
 
 
-# ---------------------------
-# CLI
-# ---------------------------
-def cli():
-    parser = argparse.ArgumentParser(description="Unified Trading Bot (mock-able).")
-    parser.add_argument("--api-key", type=str, default=os.getenv("BINANCE_API_KEY"))
-    parser.add_argument("--api-secret", type=str, default=os.getenv("BINANCE_API_SECRET"))
-    parser.add_argument("--use-real", action="store_true", help="Use real python-binance client (requires keys and python-binance).")
-    parser.add_argument("--testnet", action="store_true", default=True, help="Default to testnet when using real client.")
-    sub = parser.add_subparsers(dest="cmd", required=True)
-
-    sub.add_parser("prices", help="List current market prices (mock or real depending on mode)")
-    sub.add_parser("balance", help="Show portfolio balance (mock file or real futures balance)")
-    buy_p = sub.add_parser("buy", help="Buy (mock) a symbol")
-    buy_p.add_argument("symbol", type=str)
-    buy_p.add_argument("amount", type=float)
-
-    sell_p = sub.add_parser("sell", help="Sell (mock) a symbol")
-    sell_p.add_argument("symbol", type=str)
-    sell_p.add_argument("amount", type=float)
-
-    setlev = sub.add_parser("set-leverage", help="Set leverage (mock logs action)")
-    setlev.add_argument("symbol", type=str)
-    setlev.add_argument("leverage", type=int)
-
-    calc = sub.add_parser("calc-size", help="Calculate position size by risk parameters")
-    calc.add_argument("symbol", type=str)
-    calc.add_argument("--risk", type=float, default=1.0, help="Risk percent of balance")
-    calc.add_argument("--stop", type=float, default=0.01, help="Stop loss percent (fraction, e.g., 0.01 = 1%)")
-    calc.add_argument("--lev", type=int, default=1, help="Leverage")
-
-    trade = sub.add_parser("trade", help="Full trade flow: calc -> place market -> set mock SL/TP (simulated)")
-    trade.add_argument("symbol", type=str)
-    trade.add_argument("--risk", type=float, default=1.0)
-    trade.add_argument("--stop", type=float, default=0.01)
-    trade.add_argument("--tp", type=float, default=0.02)
-    trade.add_argument("--lev", type=int, default=1)
-    trade.add_argument("--side", choices=[SIDE_BUY, SIDE_SELL], default=SIDE_BUY)
+# ==========================
+# CLI Interface
+# ==========================
+def main():
+    parser = argparse.ArgumentParser(description="Mock Binance Portfolio Trading Bot CLI")
+    parser.add_argument("command", choices=["prices", "balance", "buy", "sell", "calc"], help="Command to run")
+    parser.add_argument("--symbol", help="Symbol (e.g., BTCUSDT)")
+    parser.add_argument("--amount", type=float, help="Amount to trade")
+    parser.add_argument("--risk", type=float, help="Risk percent for position sizing")
+    parser.add_argument("--stop", type=float, help="Stop loss percent (e.g. 0.01 = 1%)")
+    parser.add_argument("--leverage", type=int, default=1, help="Leverage")
+    parser.add_argument("--api-key", help="Binance API Key")
+    parser.add_argument("--api-secret", help="Binance API Secret")
+    parser.add_argument("--use-real", action="store_true", help="Use Binance Testnet instead of mock")
 
     args = parser.parse_args()
+    bot = build_bot(args.api_key, args.api_secret, args.use_real)
 
-    bot = build_bot(api_key=args.api_key, api_secret=args.api_secret, use_real=args.use_real, testnet=args.testnet)
+    if args.command == "prices":
+        print(json.dumps(bot.get_all_prices(), indent=2))
 
-    if args.cmd == "prices":
-        prices = bot.get_all_prices()
-        print("📊 Market Prices:")
-        for p in prices:
-            print(f"{p['symbol']:10} {p['price']:>12}")
-    elif args.cmd == "balance":
-        bal = bot.show_balance()
-        print("💼 Balance:")
-        print(json.dumps(bal, indent=2))
-    elif args.cmd == "buy":
-        try:
-            res = bot.place_market_order(args.symbol.upper(), SIDE_BUY, args.amount)
-            print("✅ Buy executed:", res)
-        except Exception as e:
-            print("❌ Error:", e)
-    elif args.cmd == "sell":
-        try:
-            res = bot.place_market_order(args.symbol.upper(), SIDE_SELL, args.amount)
-            print("✅ Sell executed:", res)
-        except Exception as e:
-            print("❌ Error:", e)
-    elif args.cmd == "set-leverage":
-        bot.set_leverage(args.symbol.upper(), args.leverage)
-        print(f"➡️  Set leverage (mock/real) for {args.symbol.upper()} to {args.leverage}x")
-    elif args.cmd == "calc-size":
-        qty, price = calculate_position_size(bot, args.symbol.upper(), args.risk, args.stop, args.lev)
-        print(f"Calculated qty: {qty:.6f} @ price {price:.2f}")
-    elif args.cmd == "trade":
-        # steps: calc size -> place order -> compute sl/tp (mock only)
-        qty, price = calculate_position_size(bot, args.symbol.upper(), args.risk, args.stop, args.lev)
-        print(f"→ Calculated qty: {qty:.6f} @ price {price:.2f}")
-        try:
-            entry = bot.place_market_order(args.symbol.upper(), args.side, qty)
-            print("→ Entry order result:", entry)
-            sl_price = price * (1 - args.stop) if args.side == SIDE_BUY else price * (1 + args.stop)
-            tp_price = price * (1 + args.tp) if args.side == SIDE_BUY else price * (1 - args.tp)
-            # In mock mode we just print the SL/TP; real mode you'd call create orders with reduceOnly/closePosition
-            print(f"→ (simulated) SL: {sl_price:.2f}, TP: {tp_price:.2f}")
-        except Exception as e:
-            print("❌ Trade error:", e)
+    elif args.command == "balance":
+        print(json.dumps(bot.show_balance(), indent=2))
+
+    elif args.command == "buy":
+        if not args.symbol or not args.amount:
+            logger.warning("Please provide --symbol and --amount")
+            return
+        order = bot.place_market_order(args.symbol, SIDE_BUY, args.amount)
+        print(json.dumps(order, indent=2))
+
+    elif args.command == "sell":
+        if not args.symbol or not args.amount:
+            logger.warning("Please provide --symbol and --amount")
+            return
+        order = bot.place_market_order(args.symbol, SIDE_SELL, args.amount)
+        print(json.dumps(order, indent=2))
+
+    elif args.command == "calc":
+        if not args.symbol or not args.risk or not args.stop:
+            logger.warning("Usage: python trading_bot.py calc --symbol BTCUSDT --risk 1 --stop 0.01 --leverage 5")
+            return
+        qty, price = calculate_position_size(bot, args.symbol, args.risk, args.stop, args.leverage)
+        print(f"Position size: {qty:.6f} units at {price:.2f} USDT")
 
 
 if __name__ == "__main__":
-    cli()
+    main()
