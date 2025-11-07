@@ -8,6 +8,23 @@ from binance.enums import (
     SIDE_BUY,
     SIDE_SELL
 )
+import logging
+from pathlib import Path
+
+# --- Logging Configuration ---
+LOG_DIR = Path("logs")
+LOG_DIR.mkdir(exist_ok=True)
+
+LOG_FILE = LOG_DIR / "bot.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+        logging.StreamHandler()
+    ]
+)
 
 from binance.exceptions import BinanceAPIException, BinanceOrderException
 
