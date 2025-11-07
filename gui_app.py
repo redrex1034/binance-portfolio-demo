@@ -55,10 +55,28 @@ st.title("💹 Mock Binance Portfolio Dashboard")
 st.markdown("### A simulated Binance trading bot — dark mode edition")
 st.markdown("---")
 
-# --- Initialize Bot (Mock by default) ---
-api_key = os.getenv("BINANCE_API_KEY")
-api_secret = os.getenv("BINANCE_API_SECRET")
-bot = tb.build_bot(api_key=api_key, api_secret=api_secret, use_real=False)
+# --- Sidebar: API Configuration ---
+st.sidebar.header("🔑 API Configuration")
+
+use_real = st.sidebar.checkbox("Use Real Binance API", value=False)
+
+api_key_input = st.sidebar.text_input("Enter API Key", type="password")
+api_secret_input = st.sidebar.text_input("Enter API Secret", type="password")
+
+if st.sidebar.button("💾 Save API Keys"):
+    if api_key_input and api_secret_input:
+        st.session_state["api_key"] = api_key_input
+        st.session_state["api_secret"] = api_secret_input
+        st.sidebar.success("✅ API keys saved for this session.")
+    else:
+        st.sidebar.warning("⚠️ Please enter both API key and secret.")
+
+# Load keys (from session or environment)
+api_key = st.session_state.get("api_key", os.getenv("BINANCE_API_KEY"))
+api_secret = st.session_state.get("api_secret", os.getenv("BINANCE_API_SECRET"))
+
+# Initialize trading bot
+bot = tb.build_bot(api_key=api_key, api_secret=api_secret, use_real=use_real)
 
 # --- Sidebar Menu ---
 st.sidebar.header("📊 Actions")
@@ -72,7 +90,8 @@ if action == "View Prices":
     st.subheader("📈 Current Market Prices")
     prices = bot.get_all_prices()
     st.table(prices)
-    st.info("Showing mock data. Connect to Binance Testnet for live simulation.")
+    if not use_real:
+        st.info("Showing mock data. Connect to Binance Testnet for live simulation.")
 
 # --- Portfolio Overview ---
 elif action == "Portfolio":
@@ -99,9 +118,9 @@ elif action == "Portfolio":
     st.pyplot(fig)
     st.caption("Mock balance stored locally in data/mock_balance.json")
 
-# --- Buy Simulation ---
+# --- Buy Simulation / Real Order ---
 elif action == "Buy":
-    st.subheader("🟢 Buy (Simulated Order)")
+    st.subheader("🟢 Buy (Simulated or Real Order)")
     prices = bot.get_all_prices()
     symbols = [p["symbol"] for p in prices]
     symbol = st.selectbox("Select Symbol", symbols)
@@ -116,9 +135,9 @@ elif action == "Buy":
         except Exception as e:
             st.error(f"❌ Error: {e}")
 
-# --- Sell Simulation ---
+# --- Sell Simulation / Real Order ---
 elif action == "Sell":
-    st.subheader("🔴 Sell (Simulated Order)")
+    st.subheader("🔴 Sell (Simulated or Real Order)")
     prices = bot.get_all_prices()
     symbols = [p["symbol"] for p in prices]
     symbol = st.selectbox("Select Symbol", symbols)
@@ -151,4 +170,4 @@ elif action == "Calc Size":
 
 # --- Footer ---
 st.markdown("---")
-st.caption("🌑 Dark Mode Dashboard | Built with Streamlit & Python 3.11+ | Mock Binance API")
+st.caption("🌑 Dark Mode Dashboard | Built with Streamlit & Python 3.11+ | Supports Mock & Real Binance API")
